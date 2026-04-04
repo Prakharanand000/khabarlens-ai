@@ -1,0 +1,47 @@
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;0,900;1,400&family=Inter:wght@400;500;600;700;800&display=swap');
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Inter', -apple-system, sans-serif;
+  background: #fff;
+  color: #111;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+.serif { font-family: 'Playfair Display', 'Georgia', serif; }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes fadeUp { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
+@keyframes fadeIn { from { opacity:0; } to { opacity:1; } }
+
+.loader { width:28px; height:28px; border:2px solid #ddd; border-top-color:#111; border-radius:50%; animation:spin 0.7s linear infinite; margin:0 auto; }
+
+.ncard { transition: transform 0.2s, box-shadow 0.2s; animation: fadeUp 0.4s ease forwards; cursor: pointer; }
+.ncard:hover { transform: translateY(-2px); box-shadow: 0 6px 24px rgba(0,0,0,0.08); }
+.ncard:hover .ncard-headline { text-decoration: underline !important; }
+
+.sitem { transition: all 0.15s; }
+.sitem:hover { background: #f5f5f5 !important; }
+
+.abtn { transition: all 0.12s; }
+.abtn:hover { opacity: 0.8; }
+
+.slink { transition: all 0.15s; }
+.slink:hover { background: #f0f0f0 !important; }
+
+.sbox { transition: border-color 0.2s; }
+.sbox:focus-within { border-color: #111 !important; }
+
+.pcard { transition: all 0.15s; }
+.pcard:hover { background: #f5f5f5 !important; transform: translateX(2px); }
+
+::-webkit-scrollbar { width:5px; }
+::-webkit-scrollbar-thumb { background:#ddd; border-radius:3px; }
+
+a { color:#111; text-decoration:none; }
+button { font-family:inherit; cursor:pointer; }
+
+.nyt-rule { border:none; border-top:1px solid #e5e5e5; margin:20px 0; }
+.nyt-rule-thick { border:none; border-top:2px solid #111; margin:20px 0; }
