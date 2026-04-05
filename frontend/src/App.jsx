@@ -9,7 +9,7 @@ import MostPolarized from "./components/MostPolarized";
 import AiChat from "./components/AiChat";
 import { RefreshCw, Search, Volume2, VolumeX, X, Globe, TrendingUp, ChevronLeft, ChevronRight } from "lucide-react";
 
-const API = "http://localhost:8000";
+const API = "https://khabarlens-backend.onrender.com";
 const CATS = ["All","Financial Crime","Money Laundering","Fraud & Scams","Insider Trading","Terrorism","Sanctions","Regulatory & Compliance","FINRA & SEC","Human Rights","War Crimes","Crime, Law & Justice","Cybercrime","Drug Trafficking","Corruption","Economy & Markets","Geopolitics","AI & Tech Ethics","Environment","Health","General News"];
 const COUNTRIES = [
   { code: "US", flag: "🇺🇸" }, { code: "UK", flag: "🇬🇧" },
