@@ -1,4 +1,4 @@
-# KhabarLens AI 🔍
+# KhabarLens AI 
 
 ### AI-Powered News Intelligence Platform
 **Built entirely during the "Who is the Agent Master" Hackathon by Fontaine Founders**
@@ -223,12 +223,8 @@ The hackathon brief asks for: *"An AI agent that delivers structured, easy-to-co
 
 ## 👥 Team
 
-Built by **Vaishali Hirereaddi** and team at the Fontaine Founders Hackathon, San Francisco — April 4, 2026.
+Built by **Prakhar Anand** and **Vaishali Hirereaddi** at the Fontaine Founders Hackathon, San Francisco.
 
 **Built entirely during the hackathon — no pre-built code.**
 
 ---
-
-## 📄 License
-
-MIT License — Open source for educational and research purposes.
