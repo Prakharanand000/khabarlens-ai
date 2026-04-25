@@ -5,7 +5,7 @@
  */
 import { useState } from "react";
 import { AlertTriangle, Eye, Volume2, ShieldAlert, Shield, ExternalLink, ArrowUpRight } from "lucide-react";
-import axios from "axios";
+
 
 const CI = {
   "Financial Crime": "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=800&h=500&fit=crop",
@@ -32,14 +32,19 @@ export default function NewsCard({ story, onOpen, apiBase, isHero }) {
   const img = (!ie && story.image_url) ? story.image_url : (CI[story.category] || CI["General News"]);
   const link = story.original_articles?.[0]?.url || "#";
 
-  const speak = async (lang) => {
-    if (ap || al) return; setAl(true);
-    try {
-      const t = `${story.headline}. ${story.neutral_summary}`.slice(0, 500);
-      const r = await axios.get(`${apiBase}/api/tts?text=${encodeURIComponent(t)}&lang=${lang}`, { responseType: "blob", timeout: 25000 });
-      const a = new Audio(URL.createObjectURL(r.data));
-      setAp(true); setAl(false); a.play(); a.onended = () => setAp(false);
-    } catch { setAl(false); }
+  const speak = (lang) => {
+    if (ap || al) return;
+    window.speechSynthesis.cancel();
+    const t = `${story.headline}. ${story.neutral_summary}`.slice(0, 500);
+    const utterance = new SpeechSynthesisUtterance(t);
+    const langMap = { en: "en-US", hi: "hi-IN", es: "es-ES", fr: "fr-FR" };
+    utterance.lang = langMap[lang] || "en-US";
+    utterance.rate = 0.95;
+    utterance.pitch = 1;
+    setAp(true);
+    utterance.onend = () => setAp(false);
+    utterance.onerror = () => setAp(false);
+    window.speechSynthesis.speak(utterance);
   };
 
   // HERO CARD — full width, image on top

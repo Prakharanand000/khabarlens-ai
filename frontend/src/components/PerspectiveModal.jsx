@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { X, ExternalLink, Volume2, Info, Shield } from "lucide-react";
-import axios from "axios";
+
 import DeepAnalysis from "./DeepAnalysis";
 import ExplainPolarization from "./ExplainPolarization";
 import NarrativeTimeline from "./NarrativeTimeline";
@@ -12,12 +12,17 @@ export default function PerspectiveModal({ story, onClose, apiBase }) {
   const [vl, setVl] = useState(false);
   const [tab, setTab] = useState("perspectives");
 
-  const say = async (text, lang = "en") => {
-    if (vl) return; setVl(true);
-    try {
-      const r = await axios.get(`${apiBase}/api/tts?text=${encodeURIComponent(text.slice(0, 500))}&lang=${lang}`, { responseType: "blob", timeout: 25000 });
-      const a = new Audio(URL.createObjectURL(r.data)); a.play(); a.onended = () => setVl(false);
-    } catch { setVl(false); }
+  const say = (text, lang = "en") => {
+    if (vl) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text.slice(0, 500));
+    const langMap = { en: "en-US", hi: "hi-IN", es: "es-ES", fr: "fr-FR" };
+    utterance.lang = langMap[lang] || "en-US";
+    utterance.rate = 0.95;
+    setVl(true);
+    utterance.onend = () => setVl(false);
+    utterance.onerror = () => setVl(false);
+    window.speechSynthesis.speak(utterance);
   };
   const p = story.polarization;
   const pc = p.score > 65 ? "#b91c1c" : p.score > 45 ? "#a16207" : p.score > 25 ? "#666" : "#15803d";
