@@ -1,60 +1,86 @@
 """
-clustering.py - Groups articles covering the same story.
-Migrated from OpenAI embeddings → sentence-transformers (free, local, no API cost).
+clustering.py - Lightweight clustering for Render free tier.
+Uses title overlap + TF-IDF cosine similarity.
+No sentence-transformers, no torch, no local model loading.
 """
 
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 import re
-from sentence_transformers import SentenceTransformer
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
-# Load once at module level — reused across all requests
-_model = SentenceTransformer("all-MiniLM-L6-v2")
-
-SIMILARITY_THRESHOLD = 0.65
-
-
-def get_embeddings(texts: list) -> np.ndarray:
-    """Get embeddings using local sentence-transformers model. Synchronous."""
-    return _model.encode(texts, show_progress_bar=False)
+SIMILARITY_THRESHOLD = 0.45
 
 
-def _title_overlap(t1: str, t2: str) -> float:
-    """Quick word-overlap similarity."""
-    w1 = set(re.sub(r'[^\w\s]', '', t1.lower()).split())
-    w2 = set(re.sub(r'[^\w\s]', '', t2.lower()).split())
-    stop = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or', 'but', 'with', 'as', 'by', 'from'}
-    w1 = w1 - stop
-    w2 = w2 - stop
+STOPWORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "in", "on", "at", "to",
+    "for", "of", "and", "or", "but", "with", "as", "by", "from", "this",
+    "that", "after", "over", "into", "about", "says", "said"
+}
+
+
+def clean_text(text: str) -> str:
+    text = text or ""
+    text = text.lower()
+    text = re.sub(r"http\S+", "", text)
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def title_overlap(t1: str, t2: str) -> float:
+    w1 = set(clean_text(t1).split()) - STOPWORDS
+    w2 = set(clean_text(t2).split()) - STOPWORDS
+
     if not w1 or not w2:
         return 0.0
+
     return len(w1 & w2) / max(len(w1), len(w2))
+
+
+def article_text(article: dict) -> str:
+    title = article.get("title", "")
+    desc = article.get("description", "")
+    source = article.get("source", "")
+    return clean_text(f"{title}. {desc}. {source}")
 
 
 async def cluster_articles(articles: list) -> list:
     """
-    Cluster articles covering the same story.
-    Phase 1: Title overlap + sub-source grouping.
-    Phase 2: sentence-transformers embeddings for remaining merging.
-    Returns list of cluster dicts.
+    Groups articles covering the same story.
+    Render-safe: no torch / transformers / sentence-transformers.
     """
+
     if not articles:
         return []
 
     if len(articles) == 1:
         return [{
             "articles": articles,
-            "primary_title": articles[0]["title"],
+            "primary_title": articles[0].get("title", ""),
             "source_count": 1,
-            "sources": [articles[0]["source"]],
+            "sources": [articles[0].get("source", "Unknown")],
             "embeddings": [],
         }]
 
-    # --- Phase 1: Title-overlap based quick clustering ---
+    texts = [article_text(a) for a in articles]
+
+    try:
+        vectorizer = TfidfVectorizer(
+            stop_words="english",
+            max_features=3000,
+            ngram_range=(1, 2)
+        )
+        tfidf = vectorizer.fit_transform(texts)
+        sim_matrix = cosine_similarity(tfidf)
+    except Exception as e:
+        print(f"TF-IDF clustering error: {e}")
+        sim_matrix = np.zeros((len(articles), len(articles)))
+
     used = set()
     clusters = []
 
-    for i, art in enumerate(articles):
+    for i, article in enumerate(articles):
         if i in used:
             continue
 
@@ -62,68 +88,36 @@ async def cluster_articles(articles: list) -> list:
         used.add(i)
 
         for j, other in enumerate(articles):
-            if j in used:
+            if j in used or i == j:
                 continue
-            overlap = _title_overlap(art["title"], other["title"])
-            if overlap > 0.4:
-                cluster_indices.append(j)
-                used.add(j)
-            elif other["source"] in art.get("sub_sources", []):
+
+            overlap = title_overlap(
+                article.get("title", ""),
+                other.get("title", "")
+            )
+
+            tfidf_sim = sim_matrix[i][j]
+
+            same_story = (
+                overlap >= 0.35
+                or tfidf_sim >= SIMILARITY_THRESHOLD
+                or other.get("source") in article.get("sub_sources", [])
+            )
+
+            if same_story:
                 cluster_indices.append(j)
                 used.add(j)
 
         cluster_arts = [articles[idx] for idx in cluster_indices]
+        sources = list(set(a.get("source", "Unknown") for a in cluster_arts))
+
         clusters.append({
             "articles": cluster_arts,
-            "primary_title": art["title"],
-            "source_count": len(set(a["source"] for a in cluster_arts)),
-            "sources": list(set(a["source"] for a in cluster_arts)),
+            "primary_title": article.get("title", ""),
+            "source_count": len(sources),
+            "sources": sources,
             "embeddings": [],
         })
-
-    # --- Phase 2: Merge similar clusters using local embeddings ---
-    if len(clusters) >= 2:
-        rep_texts = [
-            f"{c['primary_title']}. {c['articles'][0]['description'][:150]}"
-            for c in clusters
-        ]
-
-        try:
-            import asyncio
-            loop = asyncio.get_event_loop()
-            # Run synchronous model in executor to avoid blocking event loop
-            embeddings = await loop.run_in_executor(None, get_embeddings, rep_texts)
-            sim_matrix = cosine_similarity(embeddings)
-
-            merged = set()
-            new_clusters = []
-
-            for i in range(len(clusters)):
-                if i in merged:
-                    continue
-
-                current = clusters[i]
-                current_emb = [embeddings[i].tolist()]
-
-                for j in range(i + 1, len(clusters)):
-                    if j in merged:
-                        continue
-                    if sim_matrix[i][j] > SIMILARITY_THRESHOLD:
-                        current["articles"].extend(clusters[j]["articles"])
-                        current["sources"] = list(set(
-                            current["sources"] + clusters[j]["sources"]
-                        ))
-                        current["source_count"] = len(current["sources"])
-                        current_emb.append(embeddings[j].tolist())
-                        merged.add(j)
-
-                current["embeddings"] = current_emb
-                new_clusters.append(current)
-
-            clusters = new_clusters
-
-        except Exception as e:
-            print(f"Embedding clustering error: {e}")
 
     clusters.sort(key=lambda c: c["source_count"], reverse=True)
 
