@@ -1,33 +1,22 @@
 """
-clustering.py - Groups articles covering the same story using OpenAI embeddings.
-Also leverages Google News sub-sources for pre-grouping.
+clustering.py - Groups articles covering the same story.
+Migrated from OpenAI embeddings → sentence-transformers (free, local, no API cost).
 """
 
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from openai import AsyncOpenAI
-import os
 import re
-from dotenv import load_dotenv
+from sentence_transformers import SentenceTransformer
 
-load_dotenv()
-
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Load once at module level — reused across all requests
+_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 SIMILARITY_THRESHOLD = 0.65
 
 
-async def get_embeddings(texts: list) -> np.ndarray:
-    """Get embeddings for texts using OpenAI async client."""
-    all_embeddings = []
-    for i in range(0, len(texts), 20):
-        batch = texts[i:i + 20]
-        response = await client.embeddings.create(
-            model="text-embedding-3-small",
-            input=batch
-        )
-        all_embeddings.extend([item.embedding for item in response.data])
-    return np.array(all_embeddings)
+def get_embeddings(texts: list) -> np.ndarray:
+    """Get embeddings using local sentence-transformers model. Synchronous."""
+    return _model.encode(texts, show_progress_bar=False)
 
 
 def _title_overlap(t1: str, t2: str) -> float:
@@ -45,8 +34,8 @@ def _title_overlap(t1: str, t2: str) -> float:
 async def cluster_articles(articles: list) -> list:
     """
     Cluster articles covering the same story.
-    Phase 1: Use Google sub-sources + title overlap for quick grouping.
-    Phase 2: Use embeddings for remaining articles.
+    Phase 1: Title overlap + sub-source grouping.
+    Phase 2: sentence-transformers embeddings for remaining merging.
     Returns list of cluster dicts.
     """
     if not articles:
@@ -75,12 +64,10 @@ async def cluster_articles(articles: list) -> list:
         for j, other in enumerate(articles):
             if j in used:
                 continue
-            # Check title similarity
             overlap = _title_overlap(art["title"], other["title"])
             if overlap > 0.4:
                 cluster_indices.append(j)
                 used.add(j)
-            # Check if other source appears in sub_sources
             elif other["source"] in art.get("sub_sources", []):
                 cluster_indices.append(j)
                 used.add(j)
@@ -94,8 +81,7 @@ async def cluster_articles(articles: list) -> list:
             "embeddings": [],
         })
 
-    # --- Phase 2: Merge small clusters using embeddings ---
-    # Get embeddings for all cluster representatives
+    # --- Phase 2: Merge similar clusters using local embeddings ---
     if len(clusters) >= 2:
         rep_texts = [
             f"{c['primary_title']}. {c['articles'][0]['description'][:150]}"
@@ -103,10 +89,12 @@ async def cluster_articles(articles: list) -> list:
         ]
 
         try:
-            embeddings = await get_embeddings(rep_texts)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            # Run synchronous model in executor to avoid blocking event loop
+            embeddings = await loop.run_in_executor(None, get_embeddings, rep_texts)
             sim_matrix = cosine_similarity(embeddings)
 
-            # Merge clusters that are very similar
             merged = set()
             new_clusters = []
 
@@ -121,7 +109,6 @@ async def cluster_articles(articles: list) -> list:
                     if j in merged:
                         continue
                     if sim_matrix[i][j] > SIMILARITY_THRESHOLD:
-                        # Merge j into i
                         current["articles"].extend(clusters[j]["articles"])
                         current["sources"] = list(set(
                             current["sources"] + clusters[j]["sources"]
@@ -137,9 +124,7 @@ async def cluster_articles(articles: list) -> list:
 
         except Exception as e:
             print(f"Embedding clustering error: {e}")
-            # Continue with Phase 1 clusters only
 
-    # Sort: multi-source first (more interesting for analysis)
     clusters.sort(key=lambda c: c["source_count"], reverse=True)
 
     print(f"Created {len(clusters)} clusters")

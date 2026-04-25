@@ -1,21 +1,46 @@
 """
 ai_analysis.py — 21 categories, calibrated adverse detection, inference engineering.
+Migrated to Groq (llama-3.1-8b-instant) — free tier, no API cost.
 """
 
-import json, re
-from openai import AsyncOpenAI
+import json, re, asyncio
+from groq import AsyncGroq
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+MODEL = "llama-3.1-8b-instant"  # 30,000 TPM free tier (5x more than 70b)
 
 
 async def analyze_cluster(cluster: dict) -> dict:
+    """Calls Groq with exponential backoff retry on 429 rate limits."""
+    for attempt in range(6):  # up to 6 retries
+        try:
+            return await _call_groq(cluster)
+        except Exception as e:
+            msg = str(e)
+            if "429" in msg or "rate_limit_exceeded" in msg:
+                # Parse wait time from error message if available
+                wait = 20  # default wait
+                import re as _re
+                m = _re.search(r'try again in ([\d.]+)s', msg)
+                if m:
+                    wait = float(m.group(1)) + 1
+                print(f"Rate limited. Waiting {wait:.0f}s before retry {attempt+1}/6...")
+                await asyncio.sleep(wait)
+            else:
+                print(f"AI error: {e}")
+                return _fb(cluster)
+    print("Max retries reached, using fallback.")
+    return _fb(cluster)
+
+
+async def _call_groq(cluster: dict) -> dict:
     articles_text = ""
-    for i, art in enumerate(cluster["articles"][:6]):
+    for i, art in enumerate(cluster["articles"][:4]):  # 4 articles max (was 6)
         content = art.get("content", "") or art.get("description", "")
-        articles_text += f"\n--- Article {i+1} (Source: {art['source']}) ---\nTitle: {art['title']}\nContent: {content[:700]}\n"
+        articles_text += f"\n--- Article {i+1} (Source: {art['source']}) ---\nTitle: {art['title']}\nContent: {content[:300]}\n"  # 300 chars (was 700)
 
     subs = list(set(s for a in cluster["articles"] for s in a.get("sub_sources", [])))
     if subs: articles_text += f"\nOther sources: {', '.join(subs[:8])}\n"
@@ -24,7 +49,7 @@ async def analyze_cluster(cluster: dict) -> dict:
 
 {articles_text}
 
-Return ONLY valid JSON:
+Return ONLY valid JSON with no preamble or markdown:
 {{
     "headline": "Neutral headline, max 12 words",
     "neutral_summary": "Exactly 60 words. Factual, coherent paragraph. Write like Reuters wire copy. NEVER concatenate titles.",
@@ -42,7 +67,7 @@ Return ONLY valid JSON:
     ],
     "topic_tags": ["tag1", "tag2", "tag3"],
     "severity": "low/medium/high",
-    "sentiment_score": -1.0 to 1.0
+    "sentiment_score": 0.0
 }}
 
 ADVERSE RULES (is_adverse=true ONLY for):
@@ -61,12 +86,13 @@ BIAS RUBRIC: 0.0-0.2=wire-service neutral | 0.2-0.4=slight framing | 0.4-0.6=cle
 
     try:
         r = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=MODEL,
             messages=[
-                {"role": "system", "content": "Precise news analyst. Classify conservatively. Write Reuters-style summaries. Return only valid JSON."},
+                {"role": "system", "content": "Precise news analyst. Classify conservatively. Write Reuters-style summaries. Return only valid JSON with no markdown fences or preamble."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.2, max_tokens=2500,
+            temperature=0.2,
+            max_tokens=2500,
             response_format={"type": "json_object"},
         )
         txt = r.choices[0].message.content.strip()
@@ -81,8 +107,7 @@ BIAS RUBRIC: 0.0-0.2=wire-service neutral | 0.2-0.4=slight framing | 0.4-0.6=cle
         print(f"JSON error: {e}")
         return _fb(cluster)
     except Exception as e:
-        print(f"AI error: {e}")
-        return _fb(cluster)
+        raise  # let retry wrapper handle 429s
 
 
 def _fb(cluster):
