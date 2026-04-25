@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import NewsCard from "./components/NewsCard";
 import PerspectiveModal from "./components/PerspectiveModal";
@@ -9,7 +9,7 @@ import MostPolarized from "./components/MostPolarized";
 import AiChat from "./components/AiChat";
 import { RefreshCw, Search, Volume2, VolumeX, X, Globe, TrendingUp, ChevronLeft, ChevronRight } from "lucide-react";
 
-const API = "https://khabarlens-backend.onrender.com";
+const API = "http://localhost:8000";
 const CATS = ["All","Financial Crime","Money Laundering","Fraud & Scams","Insider Trading","Terrorism","Sanctions","Regulatory & Compliance","FINRA & SEC","Human Rights","War Crimes","Crime, Law & Justice","Cybercrime","Drug Trafficking","Corruption","Economy & Markets","Geopolitics","AI & Tech Ethics","Environment","Health","General News"];
 const COUNTRIES = [
   { code: "US", flag: "🇺🇸" }, { code: "UK", flag: "🇬🇧" },
@@ -61,15 +61,17 @@ export default function App() {
   const [searchFocused, setSearchFocused] = useState(false);
   const [page, setPage] = useState(1);
   const [mostPol, setMostPol] = useState(null);
-  const bRef = useRef(null);
+  const [refreshBanner, setRefreshBanner] = useState(null); // { count, stories }
+  const [isFromCache, setIsFromCache] = useState(false);
 
   const load = async (ctry) => {
     const c = ctry || country;
-    setLoading(true); setError(null); setQ(""); setActiveSearch(""); setPage(1);
+    setLoading(true); setError(null); setQ(""); setActiveSearch(""); setPage(1); setRefreshBanner(null);
     try {
-      const { data } = await axios.get(`${API}/api/stories?limit=30&country=${c}`, { timeout: 300000 });
+      const { data } = await axios.get(`${API}/api/stories?country=${c}`, { timeout: 300000 });
       setAllStories(data.all_stories || data.stories || []);
       if (data.most_polarized) setMostPol(data.most_polarized);
+      setIsFromCache(data.source === "cache");
     } catch (e) { setError(e.code === "ECONNABORTED" ? "Taking longer..." : "Can't reach backend."); }
     finally { setLoading(false); }
   };
@@ -102,12 +104,17 @@ export default function App() {
   };
 
   const playBrief = async () => {
-    if (briefing) { if (bRef.current) bRef.current.pause(); setBriefing(false); return; }
+    if (briefing) { window.speechSynthesis.cancel(); setBriefing(false); return; }
     try {
       const { data } = await axios.get(`${API}/api/briefing-text?limit=5`);
-      const r = await axios.get(`${API}/api/tts?text=${encodeURIComponent(data.text?.slice(0,900))}&lang=en`, { responseType: "blob", timeout: 30000 });
-      const a = new Audio(URL.createObjectURL(r.data));
-      bRef.current = a; setBriefing(true); a.play(); a.onended = () => { setBriefing(false); bRef.current = null; };
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(data.text?.slice(0, 900) || "No stories available.");
+      utterance.lang = "en-US";
+      utterance.rate = 0.95;
+      setBriefing(true);
+      utterance.onend = () => setBriefing(false);
+      utterance.onerror = () => setBriefing(false);
+      window.speechSynthesis.speak(utterance);
     } catch { setBriefing(false); }
   };
 
@@ -122,6 +129,21 @@ export default function App() {
 
   useEffect(() => { setPageStories(filtered.slice((page-1)*PER_PAGE, page*PER_PAGE)); }, [filtered, page]);
   useEffect(() => { load(); }, []);
+
+  // Poll for background-refreshed stories when served from cache
+  useEffect(() => {
+    if (!isFromCache || loading) return;
+    const interval = setInterval(async () => {
+      try {
+        const { data } = await axios.get(`${API}/api/refresh-status?country=${country}`);
+        if (data.status === "done" && data.new_count > 0) {
+          setRefreshBanner({ count: data.new_count, stories: data.all_stories || [] });
+          clearInterval(interval);
+        }
+      } catch {}
+    }, 10000); // poll every 10 seconds
+    return () => clearInterval(interval);
+  }, [isFromCache, loading, country]);
   useEffect(() => { document.body.style.overflow = selected ? "hidden" : ""; return () => { document.body.style.overflow = ""; }; }, [selected]);
 
   const cc = {}; allStories.forEach(s => { cc[s.category] = (cc[s.category]||0)+1; });
@@ -196,7 +218,23 @@ export default function App() {
 
         <div style={{ display: "flex", maxWidth: 1280, margin: "0 auto" }}>
           <div style={{ flex: 2, padding: "24px 28px", borderRight: "1px solid #e5e5e5", minWidth: 0 }}>
-            {/* 🔥 Most Polarized Banner */}
+
+            {/* 🆕 New stories banner */}
+            {refreshBanner && (
+              <div style={{ background: "#111", color: "#fff", borderRadius: 8, padding: "12px 20px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center", animation: "fadeUp 0.3s ease" }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>🆕 {refreshBanner.count} new {refreshBanner.count === 1 ? "story" : "stories"} just arrived</span>
+                <button onClick={() => { setAllStories(refreshBanner.stories); setRefreshBanner(null); setPage(1); }}
+                  style={{ background: "#fff", color: "#111", border: "none", padding: "6px 16px", borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Load them</button>
+              </div>
+            )}
+
+            {/* ⚡ Cache indicator */}
+            {isFromCache && !loading && (
+              <div style={{ fontSize: 11, color: "#aaa", marginBottom: 12, display: "flex", alignItems: "center", gap: 5 }}>
+                <span style={{ background: "#f0fdf4", color: "#15803d", padding: "2px 8px", borderRadius: 4, fontWeight: 600 }}>⚡ Instant</span>
+                Served from cache · fetching fresh stories in background
+              </div>
+            )}
             {!loading && mostPol && !activeSearch && cat === "All" && (
               <MostPolarized story={mostPol} onClick={() => mostPolStory && setSelected(mostPolStory)} />
             )}
