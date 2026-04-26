@@ -2,6 +2,10 @@
 backend/.env
 .env
 
+# SQLite DB — never commit, seeded at runtime
+backend/*.db
+*.db
+
 # Python
 backend/venv/
 backend/__pycache__/
