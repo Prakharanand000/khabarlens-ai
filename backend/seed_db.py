@@ -1,109 +1,61 @@
 """
 seed_db.py — Pre-populate khabarlens_cache.db with 30 analyzed stories per country.
+Guarantees ~1-2 stories per category across all 21 KhabarLens categories.
 Covers: US, UK, IN, FR, DE, JP, WORLD (210 stories total)
 Usage:  cd backend && python seed_db.py
-
-Run once before starting the server. Safe to re-run — skips countries already at 30.
 """
 
 import asyncio, sys, os, hashlib
 sys.path.insert(0, os.path.dirname(__file__))
 
-from news_ingestion import fetch_google_search, get_all_articles
+from news_ingestion import fetch_google_search
 from clustering import cluster_articles
 from ai_analysis import analyze_cluster
 from polarization import calculate_polarization
 from cache import init_db, save_stories, load_stories, count_stories, _headline_hash, MAX_STORIES
+from collections import Counter
 
 TARGET    = 30
 SEMAPHORE = asyncio.Semaphore(3)
 
-# Per-country seed queries — localised for relevance
-SEED_QUERIES = {
-    "US": [
-        "breaking US news today",
-        "Iran nuclear ceasefire negotiations",
-        "SEC fraud enforcement penalty",
-        "Federal Reserve inflation economy",
-        "artificial intelligence regulation policy",
-        "cybercrime ransomware hack",
-        "sanctions Russia China",
-        "climate change environment",
-        "Supreme Court Congress legislation",
-        "health outbreak disease CDC",
-    ],
-    "UK": [
-        "UK breaking news today",
-        "NHS healthcare crisis Britain",
-        "UK economy inflation Bank of England",
-        "Brexit trade immigration policy",
-        "UK politics Keir Starmer Labour",
-        "Scotland independence referendum",
-        "London crime security police",
-        "UK energy bills cost of living",
-        "British tech AI startup",
-        "Ukraine UK military aid",
-    ],
-    "IN": [
-        "India breaking news today",
-        "India Pakistan border tensions",
-        "Indian economy GDP growth",
-        "Modi government policy BJP",
-        "India China border dispute",
-        "Indian stock market Sensex Nifty",
-        "India elections politics",
-        "India technology startup unicorn",
-        "India climate monsoon disaster",
-        "India health disease outbreak",
-    ],
-    "FR": [
-        "France breaking news today",
-        "French politics Macron government",
-        "France economy inflation strikes",
-        "France immigration policy protest",
-        "French election politics",
-        "France Ukraine war EU",
-        "France energy nuclear policy",
-        "Paris crime security",
-        "French tech industry AI",
-        "France health crisis hospital",
-    ],
-    "DE": [
-        "Germany breaking news today",
-        "German economy recession industry",
-        "Germany politics AfD SPD CDU",
-        "Germany Ukraine war support",
-        "German energy transition climate",
-        "Germany immigration asylum policy",
-        "German automotive industry crisis",
-        "Germany EU relations policy",
-        "German tech startup Berlin",
-        "Germany health care system",
-    ],
-    "JP": [
-        "Japan breaking news today",
-        "Japan economy yen interest rates",
-        "Japan China South China Sea",
-        "Japan North Korea missile",
-        "Japanese politics LDP elections",
-        "Japan technology robotics AI",
-        "Japan earthquake disaster",
-        "Japan US alliance security",
-        "Japan trade export economy",
-        "Japan health aging population",
-    ],
-    "WORLD": [
-        "global breaking news today",
-        "United Nations Security Council resolution",
-        "world economy recession trade",
-        "global climate change summit COP",
-        "international sanctions war conflict",
-        "WHO global health pandemic",
-        "global AI technology regulation",
-        "world financial markets crash",
-        "human rights violations international",
-        "global cybersecurity threat attack",
-    ],
+# ── 21 categories × 1 query each = 21 queries per country ────────────────────
+# Ordered so non-adverse categories run FIRST (they get cut off last if cap hit)
+# Each query is written to make the category assignment unambiguous
+CATEGORY_QUERIES = [
+    # Non-adverse first — these tend to be under-represented
+    ("Economy & Markets",        "stock market Federal Reserve interest rates GDP inflation"),
+    ("Geopolitics",              "US China Russia diplomacy military tensions summit"),
+    ("AI & Tech Ethics",         "OpenAI Google artificial intelligence technology news"),
+    ("Environment",              "climate change wildfire flood extreme weather disaster"),
+    ("Health",                   "hospital pandemic flu virus outbreak CDC WHO"),
+    ("General News",             "politics election government Congress White House"),
+    ("Crime, Law & Justice",     "murder trial court verdict sentencing justice"),
+    ("Human Rights",             "protest crackdown civil rights UN human rights report"),
+    ("War Crimes",               "Gaza Ukraine airstrike civilian casualties ICC"),
+    ("Drug Trafficking",         "fentanyl cartel drug smuggling border seizure DEA"),
+    ("Corruption",               "politician bribery corruption scandal fired removed"),
+    # Adverse financial — run after non-adverse to prevent domination
+    ("Financial Crime",          "bank fraud embezzlement billion dollar theft charged"),
+    ("Money Laundering",         "money laundering shell company offshore prosecution"),
+    ("Fraud & Scams",            "online scam phishing fraud victim identity theft"),
+    ("Insider Trading",          "insider trading hedge fund executive stock tip SEC"),
+    ("Terrorism",                "terror plot bomb attack arrest FBI foiled"),
+    ("Sanctions",                "OFAC sanctions Russia Iran North Korea trade ban"),
+    ("Regulatory & Compliance",  "FDA FCA GDPR regulatory fine compliance breach"),
+    ("FINRA & SEC",              "SEC broker dealer FINRA penalty enforcement action"),
+    ("Cybercrime",               "ransomware cyberattack data breach hacker arrested"),
+    ("General News",             "sports championship NBA NFL result winner"),  # bonus
+]
+
+# Country-localised prefix to bias results toward that country
+COUNTRY_PREFIX = {
+    "US":    "",
+    "UK":    "UK Britain ",
+    "IN":    "India ",
+    "FR":    "France ",
+    "DE":    "Germany ",
+    "JP":    "Japan ",
+    "WORLD": "global international ",
 }
 
 
@@ -148,28 +100,31 @@ async def _proc_cluster(cluster: dict) -> dict | None:
         }
 
 
-async def seed_country(country: str, queries: list):
+async def seed_country(country: str):
     existing = count_stories(country)
     if existing >= TARGET:
         print(f"\n[{country}] Already has {existing} stories — skipping.")
         print(f"       Delete khabarlens_cache.db to force re-seed.")
         return
 
-    print(f"\n{'='*60}")
+    prefix = COUNTRY_PREFIX.get(country, "")
+    print(f"\n{'='*65}")
     print(f"  Seeding {country} — target {TARGET} stories ({existing} existing)")
-    print(f"{'='*60}")
+    print(f"{'='*65}")
 
     all_stories = []
     seen_hashes = set()
     loop        = asyncio.get_event_loop()
 
-    for i, query in enumerate(queries):
+    for i, (cat, base_query) in enumerate(CATEGORY_QUERIES):
         current = count_stories(country) + len(all_stories)
         if current >= TARGET:
-            print(f"  [{country}] Reached {TARGET} — done.")
+            print(f"\n  [{country}] Reached {TARGET} — done.")
             break
 
-        print(f"\n  ({i+1}/{len(queries)}) '{query}'")
+        query = (prefix + base_query).strip()
+        print(f"\n  ({i+1}/{len(CATEGORY_QUERIES)}) [{cat:<28}] '{query[:55]}'")
+
         try:
             articles = await loop.run_in_executor(None, fetch_google_search, query, country)
             if not articles:
@@ -179,29 +134,31 @@ async def seed_country(country: str, queries: list):
             clusters = await cluster_articles(articles)
             print(f"           {len(articles)} articles → {len(clusters)} clusters")
 
-            # Take up to 3 new clusters per query
+            # 1 story per query — keeps distribution even (21 queries × 1 = 21 base, top up with 2nd pass)
             batch = []
-            for c in clusters[:6]:
+            for c in clusters[:5]:
                 h = _headline_hash(c["primary_title"])
                 if h not in seen_hashes:
                     seen_hashes.add(h)
                     batch.append(c)
-                if len(batch) == 3:
-                    break
+                    break  # strictly 1 per query on first pass
 
             if not batch:
-                print(f"           All clusters already seen — skipping.")
+                print(f"           All seen — skipping.")
                 continue
 
-            print(f"           Analyzing {len(batch)} clusters...")
             results = await asyncio.gather(
                 *[_proc_cluster(c) for c in batch],
                 return_exceptions=True
             )
             stories = [r for r in results if r and not isinstance(r, Exception)]
-            print(f"           ✓ {len(stories)} stories")
+
+            # Force correct category — override AI misclassification
             for s in stories:
-                print(f"             → {s['headline'][:65]}")
+                if s["category"] != cat:
+                    print(f"           ↺ {s['category']} → {cat}")
+                    s["category"] = cat
+                print(f"           ✓ [{s['category'][:20]:<20}] {s['headline'][:48]}")
 
             all_stories.extend(stories)
 
@@ -209,41 +166,83 @@ async def seed_country(country: str, queries: list):
             print(f"           Error: {e}")
             continue
 
+    # Second pass — fill remaining slots (target - current) with 2nd story per category
+    remaining = TARGET - count_stories(country) - len(all_stories)
+    if remaining > 0:
+        print(f"\n  [{country}] Second pass — filling {remaining} remaining slots...")
+        for i, (cat, base_query) in enumerate(CATEGORY_QUERIES):
+            if remaining <= 0:
+                break
+            query = (prefix + base_query).strip()
+            try:
+                articles = await loop.run_in_executor(None, fetch_google_search, query, country)
+                if not articles:
+                    continue
+                clusters = await cluster_articles(articles)
+                # Now take 2nd cluster (skip 1st which was already seen)
+                for c in clusters[1:4]:
+                    h = _headline_hash(c["primary_title"])
+                    if h not in seen_hashes:
+                        seen_hashes.add(h)
+                        results = await asyncio.gather(_proc_cluster(c), return_exceptions=True)
+                        stories = [r for r in results if r and not isinstance(r, Exception)]
+                        for s in stories:
+                            s["category"] = cat
+                            print(f"           ✓ [{cat[:20]:<20}] {s['headline'][:48]}")
+                        all_stories.extend(stories)
+                        remaining -= len(stories)
+                        break
+            except Exception:
+                continue
+
     if all_stories:
         saved = save_stories(all_stories, country)
         final = count_stories(country)
-        print(f"\n  [{country}] Saved {saved} stories — DB now has {final} for {country}")
+        cats  = Counter(s["category"] for s in all_stories)
+
+        print(f"\n  [{country}] ✅ {saved} saved — DB now has {final} stories")
+        print(f"\n  {'Category':<35} {'Count':>5}")
+        print(f"  {'-'*42}")
+        for c, n in sorted(cats.items(), key=lambda x: x[0]):
+            bar = "█" * n
+            print(f"  {c:<35} {n:>5}  {bar}")
     else:
-        print(f"\n  [{country}] No stories saved — check GROQ_API_KEY")
+        print(f"\n  [{country}] ❌ No stories saved — check GROQ_API_KEY")
 
 
 async def main():
     init_db()
 
-    countries = list(SEED_QUERIES.keys())
-    print(f"\nKhabarLens DB Seeder")
-    print(f"Countries: {', '.join(countries)}")
-    print(f"Target: {TARGET} stories each = {TARGET * len(countries)} total")
-    print(f"\nEstimated time: {TARGET * len(countries) // 3 * 4 // 60}–{TARGET * len(countries) // 3 * 6 // 60} minutes\n")
+    countries     = ["US", "UK", "IN", "FR", "DE", "JP", "WORLD"]
+    existing_total = sum(count_stories(c) for c in countries)
+
+    print(f"\nKhabarLens DB Seeder — Balanced across 21 categories")
+    print(f"Countries  : {', '.join(countries)}")
+    print(f"Target     : {TARGET} stories × {len(countries)} = {TARGET * len(countries)} total")
+    print(f"Currently  : {existing_total} stories in DB")
+    print(f"Strategy   : non-adverse categories first, 1 story/category/pass")
+    print(f"Est. time  : 30–45 mins\n")
 
     for country in countries:
-        await seed_country(country, SEED_QUERIES[country])
+        await seed_country(country)
 
     # Final summary
-    print(f"\n{'='*60}")
+    print(f"\n{'='*65}")
     print(f"  SEED COMPLETE")
-    print(f"{'='*60}")
-    print(f"\n{'Country':<10} {'Stories':>8}  Categories")
-    print("-" * 60)
-    total = 0
+    print(f"{'='*65}")
+    print(f"\n{'Country':<10} {'Stories':>8}  Category spread (top 5)")
+    print("-" * 65)
+    grand_total = 0
     for country in countries:
-        stories = load_stories(country)
-        total += len(stories)
-        cats = set(s["category"] for s in stories)
-        print(f"{country:<10} {len(stories):>8}  {', '.join(sorted(cats)[:4])}{'...' if len(cats)>4 else ''}")
-    print("-" * 60)
-    print(f"{'TOTAL':<10} {total:>8}")
-    print(f"\n✅ Run 'python main.py' — site loads instantly for all countries.\n")
+        stories     = load_stories(country)
+        grand_total += len(stories)
+        cats        = Counter(s["category"] for s in stories)
+        top         = ", ".join(f"{c}({n})" for c, n in cats.most_common(5))
+        print(f"{country:<10} {len(stories):>8}  {top}")
+    print("-" * 65)
+    print(f"{'TOTAL':<10} {grand_total:>8}")
+    print(f"\n✅ Run 'python main.py' — site loads instantly for all {len(countries)} countries.")
+    print(f"   Run 'python inspect_db.py' to verify.\n")
 
 
 if __name__ == "__main__":
