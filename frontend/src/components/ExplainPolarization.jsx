@@ -6,16 +6,17 @@ import { useState } from "react";
 import { Loader2, Zap, AlertTriangle, ArrowUpRight } from "lucide-react";
 import axios from "axios";
 
-const API = "http://localhost:8000";
+const API = import.meta.env.VITE_API_URL || "https://khabarlens-backend.onrender.com";
 
-export default function ExplainPolarization({ story }) {
+export default function ExplainPolarization({ story, apiBase }) {
+  const BASE = apiBase || API;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
 
   const run = async () => {
     if (loading) return; setLoading(true);
     try {
-      const r = await axios.post(`${API}/api/explain-polarization`, {
+      const r = await axios.post(`${BASE}/api/explain-polarization`, {
         headline: story.headline,
         summary: story.neutral_summary,
         sources: story.sources || [],

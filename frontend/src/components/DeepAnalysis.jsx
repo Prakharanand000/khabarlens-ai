@@ -6,9 +6,10 @@ import { useState } from "react";
 import { Loader2, AlertTriangle, Zap, Eye, Radio, Target, MessageCircle } from "lucide-react";
 import axios from "axios";
 
-const API = "http://localhost:8000";
+const API = import.meta.env.VITE_API_URL || "https://khabarlens-backend.onrender.com";
 
-export default function DeepAnalysis({ story }) {
+export default function DeepAnalysis({ story, apiBase }) {
+  const BASE = apiBase || API;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -17,7 +18,7 @@ export default function DeepAnalysis({ story }) {
     if (loading) return;
     setLoading(true); setError(null);
     try {
-      const resp = await axios.post(`${API}/api/deep-analysis`, {
+      const resp = await axios.post(`${BASE}/api/deep-analysis`, {
         headline: story.headline,
         summary: story.neutral_summary,
         sources: story.sources || [],

@@ -6,21 +6,22 @@ import { useState } from "react";
 import { Loader2, Clock, TrendingUp } from "lucide-react";
 import axios from "axios";
 
-const API = "http://localhost:8000";
+const API = import.meta.env.VITE_API_URL || "https://khabarlens-backend.onrender.com";
 
 const PHASE_COLORS = {
   "low": "#15803d", "rising": "#a16207", "high": "#b91c1c",
   "neutral": "#888", "mixed": "#a16207", "diverging": "#b91c1c",
 };
 
-export default function NarrativeTimeline({ story }) {
+export default function NarrativeTimeline({ story, apiBase }) {
+  const BASE = apiBase || API;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
 
   const run = async () => {
     if (loading) return; setLoading(true);
     try {
-      const r = await axios.post(`${API}/api/narrative-timeline`, {
+      const r = await axios.post(`${BASE}/api/narrative-timeline`, {
         headline: story.headline, summary: story.neutral_summary, category: story.category,
       }, { timeout: 20000 });
       if (!r.data.error) setData(r.data);

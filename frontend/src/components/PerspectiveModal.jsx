@@ -170,14 +170,13 @@ export default function PerspectiveModal({ story, onClose, apiBase }) {
             </>
           )}
 
-          {/* TAB: Explain Polarization */}
-          {tab === "explain" && <ExplainPolarization story={story} />}
+          {tab === "explain" && <ExplainPolarization story={story} apiBase={apiBase} />}
 
           {/* TAB: Deep Analysis */}
-          {tab === "deep" && <DeepAnalysis story={story} />}
+          {tab === "deep" && <DeepAnalysis story={story} apiBase={apiBase} />}
 
           {/* TAB: Timeline */}
-          {tab === "timeline" && <NarrativeTimeline story={story} />}
+          {tab === "timeline" && <NarrativeTimeline story={story} apiBase={apiBase} />}
         </div>
       </div>
     </div>
