@@ -2,6 +2,7 @@
 main.py — KhabarLens AI
 - SQLite cache: max 30 unique stories per country
 - On load: serve cache instantly, kick off background fetch of 5 new stories
+- Cold start: loads from seed_data.json (pre-baked, committed to git) instantly
 - Dedup: headline hash + word-overlap check in cache.py
 - Rate limit: only /api/stories and /api/search (10 loads per IP, 30s cooldown)
 - All AI endpoints use Groq retry on 429
@@ -12,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 import asyncio, hashlib, httpx, os, json, re, time
+from datetime import datetime
 from collections import defaultdict
 from dotenv import load_dotenv
 from groq import AsyncGroq
@@ -42,11 +44,110 @@ COLD_FETCH_LIMIT    = 10   # clusters to analyze on cold cache (fills DB to ~10 
 REFRESH_BATCH       = 5    # new stories fetched per background refresh
 SERVE_LIMIT         = 30   # max stories returned to frontend
 
+SEED_JSON_PATH      = os.path.join(os.path.dirname(__file__), "seed_data.json")
+
 
 @app.on_event("startup")
 async def startup():
     init_db()
     delete_expired()
+
+    # --- INSTANT LOAD: if DB is empty, hydrate from pre-baked seed_data.json ---
+    # This runs in <100ms vs 2 minutes for live API seeding.
+    total_in_db = sum(count_stories(c) for c in ["US", "UK", "IN", "FR", "DE", "JP", "WORLD"])
+    if total_in_db == 0:
+        if os.path.exists(SEED_JSON_PATH):
+            print("[startup] Empty DB — loading from seed_data.json instantly...")
+            _load_seed_json()
+        else:
+            # Fallback: no seed file, run background auto-seed (old behaviour)
+            print("[startup] Empty DB and no seed_data.json — auto-seeding in background (slow)...")
+            asyncio.create_task(_auto_seed())
+    else:
+        print(f"[startup] DB has {total_in_db} stories — ready instantly.")
+
+    # Pre-warm the US cache into memory so first /api/stories is instant
+    us_stories = load_stories("US")
+    if us_stories:
+        _cache.update({"stories": us_stories, "country": "US"})
+        print(f"[startup] Pre-warmed US cache with {len(us_stories)} stories.")
+
+
+def _load_seed_json():
+    """
+    Loads pre-baked stories from seed_data.json into SQLite.
+    Stamps them with today's created_at so TTL doesn't expire them immediately.
+    """
+    try:
+        with open(SEED_JSON_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        stories_by_country = data.get("stories", {})
+        now = datetime.utcnow().isoformat()
+        total_saved = 0
+
+        for country, stories in stories_by_country.items():
+            # Stamp fresh created_at so they survive TTL check
+            for s in stories:
+                s["_seed_loaded_at"] = now
+
+            saved = save_stories(stories, country)
+            total_saved += saved
+            print(f"[seed_json] {country}: {saved} stories loaded")
+
+        print(f"[seed_json] ✅ Total: {total_saved} stories loaded from seed_data.json in <1s")
+
+    except Exception as e:
+        print(f"[seed_json] ❌ Failed to load seed_data.json: {e}")
+        # Fallback to background seeding so the app doesn't stay empty
+        asyncio.create_task(_auto_seed())
+
+
+async def _auto_seed():
+    """Quick seed on cold start — fetches 1 story per key category for US only.
+    Only used as fallback when seed_data.json is not present."""
+    QUICK_QUERIES = [
+        ("Economy & Markets",  "Federal Reserve interest rates inflation GDP"),
+        ("Geopolitics",        "US China Russia diplomacy military tensions"),
+        ("AI & Tech Ethics",   "OpenAI artificial intelligence regulation news"),
+        ("Health",             "WHO disease outbreak hospital pandemic"),
+        ("Environment",        "climate change wildfire flood disaster"),
+        ("General News",       "US politics Congress White House news today"),
+        ("Terrorism",          "terror attack arrest FBI foiled plot"),
+        ("Sanctions",          "US sanctions Russia Iran trade ban OFAC"),
+        ("Cybercrime",         "ransomware cyberattack data breach hacker"),
+        ("War Crimes",         "Gaza Ukraine ICC war crimes civilian"),
+    ]
+    loop = asyncio.get_event_loop()
+    seen = set()
+    stories = []
+    for country in ["US", "UK", "IN", "WORLD"]:
+        for cat, query in QUICK_QUERIES:
+            try:
+                articles = await loop.run_in_executor(None, fetch_google_search, query, country)
+                if not articles: continue
+                clusters = await cluster_articles(articles)
+                for c in clusters[:1]:
+                    h = _headline_hash(c["primary_title"])
+                    if h in seen: continue
+                    seen.add(h)
+                    story = await _proc(c)
+                    if story:
+                        story["category"] = cat
+                        stories.append((story, country))
+                        print(f"[seed] [{country}] {story['headline'][:60]}")
+                        break
+            except Exception as e:
+                print(f"[seed] Error: {e}")
+                continue
+    from itertools import groupby
+    from operator import itemgetter
+    by_country = {}
+    for story, country in stories:
+        by_country.setdefault(country, []).append(story)
+    for country, s_list in by_country.items():
+        save_stories(s_list, country)
+        print(f"[seed] Saved {len(s_list)} stories for {country}")
 
 
 # ── Rate limiting ──────────────────────────────────────────────────────────────
@@ -59,7 +160,7 @@ def check_rate_limit(request: Request):
     ip  = request.client.host
     now = time.time()
     if now - _last_call.get(ip, 0) < COOLDOWN_SECONDS:
-        return   # repeat call within cooldown — pass through, don't count
+        return
     _last_call[ip] = now
     if _usage[ip] >= RATE_LIMIT:
         raise HTTPException(429,
@@ -158,7 +259,6 @@ async def _background_refresh(country: str):
 
             clusters = await cluster_articles(articles)
 
-            # Only process clusters whose headline is NOT already cached
             existing = get_cached_headlines(country)
             new_clusters = [
                 c for c in clusters
@@ -177,7 +277,7 @@ async def _background_refresh(country: str):
             new_stories = [r for r in results if r and not isinstance(r, Exception)]
 
             if new_stories:
-                saved = save_stories(new_stories, country)   # dedup + cap enforced here
+                saved = save_stories(new_stories, country)
                 updated = load_stories(country)
                 _cache["stories"] = updated
                 print(f"[refresh] +{saved} stories, DB now {len(updated)} for {country}")
@@ -202,7 +302,6 @@ async def get_stories(request: Request, country: str = "US", force_refresh: bool
         _cache.update({"stories": cached, "country": country})
         most_pol = cached[0]
 
-        # Kick background refresh if not already running
         if get_refresh_status(country)["status"] != "running":
             asyncio.create_task(_background_refresh(country))
 
@@ -286,7 +385,7 @@ async def search_stories(request: Request,
     stories.sort(key=lambda s: s["polarization"]["score"], reverse=True)
 
     if stories:
-        save_stories(stories, country)   # also saved to cache (deduped + capped)
+        save_stories(stories, country)
 
     return {"stories": stories, "query": q, "total": len(stories)}
 
