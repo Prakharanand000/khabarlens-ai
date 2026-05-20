@@ -3,6 +3,8 @@
 ### AI-Powered News Intelligence Platform
 **Built entirely during the "Who is the Agent Master" Hackathon by Fontaine Founders**
 
+**Live Demo**: https://khabarlens-frontend.onrender.com/
+
 **Track:** Going Merry — AI News (Idea #1)
 
 ---
